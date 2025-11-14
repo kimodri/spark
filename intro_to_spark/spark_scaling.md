@@ -11,6 +11,7 @@ joined_df = larged_df.join(
 
 joined_df.show()
 ```
+---
 ## Execution Plans
 whenever we run an operation on a dataframe, spark constructs an execution plan which then optimizes to a physical plan
 
@@ -24,11 +25,10 @@ df.filter(df.Age > 40).select("Name").explian().explain()
 *(1) Filter (isnotnull(Age) AND (Age > 30))
 +- Scan ExistingRDD[Name:String, Age:Int]
 ```
-
+---
 ## Caching and Persisting DataFrames for Optimization
 
 Caching and persisting are fundamental optimization techniques in Spark. They are involved in optimization because they directly address Spark's **lazy evaluation model** and reduce expensive **Input/Output (I/O)** and **recomputation**.
-
 
 ### The Optimization: Avoiding Recomputation
 
@@ -42,7 +42,7 @@ Spark's **lazy evaluation** means transformations are not executed until an acti
 The `.cache()` method is a shorthand that stores the data in **memory** first and spills to **disk** if needed (`MEMORY_AND_DISK`).
 
 #### Sample Code
-
+- call `.cache` before Action
 ```python
 # 1. Long lineage of transformations (e.g., loading, joining, filtering)
 df_processed = (spark.read.parquet("big_data_source")
@@ -60,6 +60,44 @@ df_processed.show(10)
 df_processed.write.mode("overwrite").parquet("output_path") 
 ```
 
+**CAVEATS**
+- Very large datasets may not fir memory and thus disk (depending on the disk configuration of the cluster this may not yield a good improvement)
+- If you are reading from a local network resource and have slow local disk I/O, it may be better to avoid caching
+
+**TIPS**
+- Try caching DataFrame at various points and etermine if your performace improves (how to do this)
+- Cache in memory and fast SSD (this is persisting)
+- If normal caching does not work we can use parquet
+- Stop caching when finished
+
+#### 1\. Try Caching DataFrame at Various Points to Determine if Performance Improves
+
+This tip is about finding the optimal place in your complex execution plan to interrupt Spark's lazy evaluation.
+
+  * **How to do this:** You experiment by placing the `.cache()` call on different intermediate DataFrames within your pipeline.
+
+      * **Scenario 1: Cache the final DataFrame.** If the final DataFrame is used multiple times (e.g., you call `.count()`, then `.show()`, then `.write()`), caching the final result prevents the entire computation from running three times.
+      * **Scenario 2: Cache an expensive intermediate DataFrame.** If you have a pipeline like: **Load $\rightarrow$ Complex Join $\rightarrow$ Filter $\rightarrow$ Aggregate**, and the **Complex Join** step takes 90% of the time, you should cache the DataFrame *after* the join but *before* the subsequent filter and aggregate if those steps are run repeatedly.
+
+  * **Code Example (Testing Cache Placement):**
+
+    ```python
+    # 1. Pipeline Segment 1 (e.g., Slow Join)
+    df_join_result = df_a.join(df_b, on='key', how='inner')
+
+    # --- START CACHE TEST HERE ---
+    df_join_result.cache()
+    df_join_result.count() # Action to trigger the cache
+    # -----------------------------
+
+    # 2. Pipeline Segment 2 (Subsequent Filters)
+    df_final = df_join_result.filter(F.col("valid") == True)
+
+    # 3. Time the execution of a final action here.
+    # If the subsequent steps (2 and 3) are run many times, caching at step 1 saves time.
+    df_final.show()
+    ```
+---
 ### 2\. Persisting (`.persist()`)
 
 The `.persist()` method allows you to select a specific **StorageLevel** to fine-tune resource usage and fault tolerance.
